@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package log
 
 import (
@@ -95,32 +79,12 @@ func (l *DelegatingLogger) WithName(name string) logr.Logger {
 // WithValues provides a new Logger with the tags appended
 func (l *DelegatingLogger) WithValues(tags ...interface{}) logr.Logger {
 	if l.promise == nil {
-		return l.Logger.WithValues(tags...)
+		return l.Logger.WithValues(tags)
 	}
 
 	res := &DelegatingLogger{Logger: l.Logger}
-	promise := l.promise.WithValues(res, tags...)
+	promise := l.promise.WithValues(res, tags)
 	res.promise = promise
 
 	return res
-}
-
-// Fulfill switches the logger over to use the actual logger
-// provided, instead of the temporary initial one, if this method
-// has not been previously called.
-func (l *DelegatingLogger) Fulfill(actual logr.Logger) {
-	if l.promise != nil {
-		l.promise.Fulfill(actual)
-	}
-}
-
-// NewDelegatingLogger constructs a new DelegatingLogger which uses
-// the given logger before it's promise is fulfilled.
-func NewDelegatingLogger(initial logr.Logger) *DelegatingLogger {
-	l := &DelegatingLogger{
-		Logger:  initial,
-		promise: &loggerPromise{},
-	}
-	l.promise.logger = l
-	return l
 }

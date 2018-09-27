@@ -23,31 +23,21 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
-// clientCreatorFunc knows how to create a client and the corresponding list object that it should
-// deserialize into for any given group-version-kind.
-type clientCreatorFunc func(gvk schema.GroupVersionKind,
-	codecs serializer.CodecFactory,
-	scheme *runtime.Scheme,
-	baseConfig *rest.Config) (client rest.Interface, listObj runtime.Object, err error)
-
-// newSpecificInformersMap returns a new specificInformersMap (like
-// the generical InformersMap, except that it doesn't implement WaitForCacheSync).
-func newSpecificInformersMap(config *rest.Config,
+// NewInformersMap returns a new InformersMap
+func NewInformersMap(config *rest.Config,
 	scheme *runtime.Scheme,
 	mapper meta.RESTMapper,
-	resync time.Duration, createClient clientCreatorFunc) *specificInformersMap {
-	ip := &specificInformersMap{
+	resync time.Duration) *InformersMap {
+	ip := &InformersMap{
 		config:         config,
 		Scheme:         scheme,
 		mapper:         mapper,
@@ -55,7 +45,6 @@ func newSpecificInformersMap(config *rest.Config,
 		codecs:         serializer.NewCodecFactory(scheme),
 		paramCodec:     runtime.NewParameterCodec(scheme),
 		resync:         resync,
-		createClient:   createClient,
 	}
 	return ip
 }
@@ -69,9 +58,9 @@ type MapEntry struct {
 	Reader CacheReader
 }
 
-// specificInformersMap create and caches Informers for (runtime.Object, schema.GroupVersionKind) pairs.
-// It uses a standard parameter codec constructed based on the given generated Scheme.
-type specificInformersMap struct {
+// InformersMap create and caches Informers for (runtime.Object, schema.GroupVersionKind) pairs.
+//It uses a standard parameter codec constructed based on the given generated Scheme.
+type InformersMap struct {
 	// Scheme maps runtime.Objects to GroupVersionKinds
 	Scheme *runtime.Scheme
 
@@ -101,16 +90,10 @@ type specificInformersMap struct {
 
 	// start is true if the informers have been started
 	started bool
-
-	// createClient knows how to create a client and a list object,
-	// and allows for abstracting over the particulars of structured vs
-	// unstructured objects.
-	createClient clientCreatorFunc
 }
 
 // Start calls Run on each of the informers and sets started to true.  Blocks on the stop channel.
-// It doesn't return start because it can't return an error, and it's not a runnable directly.
-func (ip *specificInformersMap) Start(stop <-chan struct{}) {
+func (ip *InformersMap) Start(stop <-chan struct{}) error {
 	func() {
 		ip.mu.Lock()
 		defer ip.mu.Unlock()
@@ -127,20 +110,21 @@ func (ip *specificInformersMap) Start(stop <-chan struct{}) {
 		ip.started = true
 	}()
 	<-stop
+	return nil
 }
 
-// HasSyncedFuncs returns all the HasSynced functions for the informers in this map.
-func (ip *specificInformersMap) HasSyncedFuncs() []cache.InformerSynced {
+// WaitForCacheSync waits until all the caches have been synced
+func (ip *InformersMap) WaitForCacheSync(stop <-chan struct{}) bool {
 	syncedFuncs := make([]cache.InformerSynced, 0, len(ip.informersByGVK))
 	for _, informer := range ip.informersByGVK {
 		syncedFuncs = append(syncedFuncs, informer.Informer.HasSynced)
 	}
-	return syncedFuncs
+	return cache.WaitForCacheSync(stop, syncedFuncs...)
 }
 
-// Get will create a new Informer and add it to the map of specificInformersMap if none exists.  Returns
+// Get will create a new Informer and add it to the map of InformersMap if none exists.  Returns
 // the Informer from the map.
-func (ip *specificInformersMap) Get(gvk schema.GroupVersionKind, obj runtime.Object) (*MapEntry, error) {
+func (ip *InformersMap) Get(gvk schema.GroupVersionKind, obj runtime.Object) (*MapEntry, error) {
 	// Return the informer if it is found
 	i, ok := func() (*MapEntry, bool) {
 		ip.mu.RLock()
@@ -207,7 +191,14 @@ func (ip *specificInformersMap) Get(gvk schema.GroupVersionKind, obj runtime.Obj
 }
 
 // newListWatch returns a new ListWatch object that can be used to create a SharedIndexInformer.
-func (ip *specificInformersMap) newListWatch(gvk schema.GroupVersionKind) (*cache.ListWatch, error) {
+func (ip *InformersMap) newListWatch(gvk schema.GroupVersionKind) (*cache.ListWatch, error) {
+	// Construct a RESTClient for the groupVersionKind that we will use to
+	// talk to the apiserver.
+	client, err := apiutil.RESTClientForGVK(gvk, ip.config, ip.codecs)
+	if err != nil {
+		return nil, err
+	}
+
 	// Kubernetes APIs work against Resources, not GroupVersionKinds.  Map the
 	// groupVersionKind to the Resource API we will use.
 	mapping, err := ip.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
@@ -215,9 +206,9 @@ func (ip *specificInformersMap) newListWatch(gvk schema.GroupVersionKind) (*cach
 		return nil, err
 	}
 
-	// Construct a RESTClient for the groupVersionKind that we will use to
-	// talk to the apiserver, and the list object that we'll use to describe our results.
-	client, listObj, err := ip.createClient(gvk, ip.codecs, ip.Scheme, ip.config)
+	// Get a listObject for listing that the ListWatch can DeepCopy
+	listGVK := gvk.GroupVersion().WithKind(gvk.Kind + "List")
+	listObj, err := ip.Scheme.New(listGVK)
 	if err != nil {
 		return nil, err
 	}
@@ -236,39 +227,4 @@ func (ip *specificInformersMap) newListWatch(gvk schema.GroupVersionKind) (*cach
 			return client.Get().Resource(mapping.Resource).VersionedParams(&opts, ip.paramCodec).Watch()
 		},
 	}, nil
-}
-
-// createStructuredClient is a ClientCreatorFunc for use with structured
-// objects (i.e. not Unstructured/UnstructuredList).
-func createStructuredClient(gvk schema.GroupVersionKind,
-	codecs serializer.CodecFactory,
-	scheme *runtime.Scheme,
-	baseConfig *rest.Config) (rest.Interface, runtime.Object, error) {
-
-	client, err := apiutil.RESTClientForGVK(gvk, baseConfig, codecs)
-	if err != nil {
-		return nil, nil, err
-	}
-	listGVK := gvk.GroupVersion().WithKind(gvk.Kind + "List")
-	listObj, err := scheme.New(listGVK)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return client, listObj, nil
-}
-
-// createUnstructuredClient is a ClientCreatorFunc for use with Unstructured and UnstructuredList.
-func createUnstructuredClient(gvk schema.GroupVersionKind,
-	_ serializer.CodecFactory,
-	_ *runtime.Scheme,
-	baseConfig *rest.Config) (rest.Interface, runtime.Object, error) {
-
-	listObj := &unstructured.UnstructuredList{}
-	client, err := apiutil.RESTUnstructuredClientForGVK(gvk, baseConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return client, listObj, nil
 }

@@ -122,8 +122,8 @@
 [[projects]]
   branch = "master"
   name = "github.com/operator-framework/operator-sdk"
-  packages = ["version"]
-  revision = "ac46cd787d8c3a172a0e196cab04b3497eaed663"
+  packages = ["version", "pkg/test", "pkg/test/e2eutil"]
+  revision = "72431e2e795ad56897fb8f834bd8cfecfe822e3e"
 
 [[projects]]
   name = "github.com/sirupsen/logrus"
@@ -192,6 +192,7 @@
   revision = "4910a1d54f876d7b22162a85f4d066d3ee649450"
 
 [[projects]]
+  digest = "1:5acd3512b047305d49e8763eef7ba423901e85d5dd2fd1e71778a0ea8de10bd4"
   name = "golang.org/x/text"
   packages = [
     "collate",
@@ -207,8 +208,9 @@
     "unicode/bidi",
     "unicode/cldr",
     "unicode/norm",
-    "unicode/rangetable"
+    "unicode/rangetable",
   ]
+  pruneopts = ""
   revision = "f21a4dfb5e38f5895301dc265a8def02365cc3d0"
   version = "v0.3.0"
 
@@ -266,6 +268,20 @@
   version = "kubernetes-1.10.0"
 
 [[projects]]
+  digest = "1:34dff545860050793802bc3245899316d11ea036d37d3b396deff3785a66196a"
+  name = "k8s.io/apiextensions-apiserver"
+  packages = [
+    "pkg/apis/apiextensions",
+    "pkg/apis/apiextensions/v1beta1",
+    "pkg/client/clientset/clientset",
+    "pkg/client/clientset/clientset/scheme",
+    "pkg/client/clientset/clientset/typed/apiextensions/v1beta1",
+  ]
+  pruneopts = ""
+  revision = "4347b330d0ff094db860f2f75fa725b4f4b53618"
+  version = "kubernetes-1.10.1"
+
+[[projects]]
   name = "k8s.io/apimachinery"
   packages = [
     "pkg/api/errors",
@@ -320,6 +336,7 @@
   name = "k8s.io/client-go"
   packages = [
     "discovery",
+    "discovery/cached",
     "dynamic",
     "kubernetes",
     "kubernetes/scheme",
@@ -409,7 +426,7 @@
     "pkg/source",
     "pkg/source/internal"
   ]
-  revision = "3ce1536e6f480b130dafe62569aaeeeb9f91540b"
+  revision = "3aaf8cdb09ecb557514d99ba682b1173bd61b870"
   source = "github.com/shawn-hurley/controller-runtime"
 
 [solve-meta]

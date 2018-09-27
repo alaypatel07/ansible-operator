@@ -19,18 +19,17 @@ package config
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/user"
 	"path/filepath"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 )
 
 var (
 	kubeconfig, masterURL string
-	log                   = logf.KBLog.WithName("client").WithName("config")
 )
 
 func init() {
@@ -84,11 +83,11 @@ func GetConfig() (*rest.Config, error) {
 // If --kubeconfig is set, will use the kubeconfig file at that location.  Otherwise will assume running
 // in cluster and use the cluster provided kubeconfig.
 //
-// Will log an error and exit if there is an error creating the rest.Config.
+// Will log.Fatal if there is an error creating the rest.Config.
 func GetConfigOrDie() *rest.Config {
 	config, err := GetConfig()
 	if err != nil {
-		log.Error(err, "unable to get kubeconfig")
+		log.Fatal(err)
 	}
 	return config
 }
