@@ -19,14 +19,14 @@ import (
 	"errors"
 	"path/filepath"
 	"github.com/operator-framework/operator-sdk/pkg/test/e2eutil"
+	"sort"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
-	retryInterval   = time.Second * 5
-	timeout         = time.Second * 30
-	testDir         = "./example/test"
-	assertsFilePath = testDir + "/asserts.yaml"
-	resourcesDir    = testDir + "/resources/"
+	retryInterval = time.Second * 5
+	timeout       = time.Second * 10
+	testDir       = "./example/test"
 )
 
 type Assert struct {
@@ -48,11 +48,34 @@ func readAsserts(reader io.Reader) ([]Assert, error) {
 	return asserts, err
 }
 
-func readCrs(reader io.Reader) (*unstructured.Unstructured, error) {
+func readCrs(reader io.Reader, namespace string) ([]*unstructured.Unstructured, error) {
+	crs := make([]*unstructured.Unstructured, 0)
 	d := yaml.NewYAMLOrJSONDecoder(reader, 65535)
 	var cr unstructured.Unstructured;
-	err := d.Decode(&cr)
-	return &cr, err
+	for {
+		err := d.Decode(&cr)
+		if err == nil {
+			cr.SetNamespace(namespace)
+			crs = append(crs, &cr)
+		}
+		if err == io.EOF {
+			return crs, nil
+		}
+		if err != nil {
+			return crs, err
+		}
+	}
+}
+
+func getTestDirs(td string) ([]string, error) {
+	testDirs := make([]string, 0)
+	err := filepath.Walk(td, func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() && path[0:1] != "." {
+			testDirs = append(testDirs, path)
+		}
+		return nil
+	})
+	return testDirs, err
 }
 
 func ExampleCluster(t *testing.T) {
@@ -63,40 +86,7 @@ func ExampleCluster(t *testing.T) {
 		t.Logf("could not get namespace: %v", err)
 	}
 	defer ctx.Cleanup(t)
-	var crFiles []string
 
-	err = filepath.Walk(resourcesDir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			crFiles = append(crFiles, path)
-		}
-		return nil
-	})
-
-	if err != nil {
-		panic(err)
-	}
-
-	crs := make([]*unstructured.Unstructured, 0)
-
-	for _, fp := range crFiles {
-		f, err := os.Open(fp)
-		if err != nil {
-			panic(err)
-		}
-		c, err := readCrs(f)
-		if err != nil {
-			panic(err)
-		}
-		c.SetNamespace(namespace)
-		crs = append(crs, c)
-	}
-
-	ctx.AddFinalizerFn(func() error {
-		for _, cr := range crs {
-			framework.Global.DynamicClient.Delete(context.TODO(), cr)
-		}
-		return nil
-	})
 	fmt.Println("start")
 	err = ctx.InitializeClusterResources()
 	if err != nil {
@@ -124,7 +114,6 @@ func ExampleCluster(t *testing.T) {
 		Version: "v1alpha1",
 	}
 
-
 	framework.AddToFrameworkScheme(func(scheme *runtime.Scheme) error {
 		scheme.AddKnownTypes(appGVK, &unstructured.Unstructured{},
 			&unstructured.UnstructuredList{})
@@ -134,52 +123,113 @@ func ExampleCluster(t *testing.T) {
 		Items: nil,
 	})
 
-	for _, cr := range crs {
-		err = framework.Global.DynamicClient.Create(context.TODO(), cr)
+	testDirs, err := getTestDirs(testDir + "/test-example")
+
+	sort.Strings(testDirs)
+
+
+	for _, dir := range testDirs {
+
+		cf, err := os.Open(dir + "/create.yaml")
+		if err == nil {
+			c, err := readCrs(cf, namespace)
+			if err != nil {
+				panic(err)
+			}
+			ctx.AddFinalizerFn(func() error {
+				for _, cr := range c {
+					framework.Global.DynamicClient.Delete(context.TODO(), cr)
+				}
+				return nil
+			})
+			for _, cr := range c {
+				err = framework.Global.DynamicClient.Create(context.TODO(), cr)
+				if err != nil {
+					t.Logf("error creating crs %+v\n", err)
+					t.Fail()
+				}
+			}
+		}
+		uf, err := os.Open(dir + "/update.yaml")
+		if err == nil {
+			u, err := readCrs(uf, namespace)
+			if err != nil {
+				panic(err)
+			}
+			ctx.AddFinalizerFn(func() error {
+				for _, cr := range u {
+					framework.Global.DynamicClient.Delete(context.TODO(), cr)
+				}
+				return nil
+			})
+			for _, cr := range u {
+				ok := types.NamespacedName{cr.GetNamespace(), cr.GetName()}
+				var c unstructured.Unstructured
+				err := framework.Global.DynamicClient.Get(context.TODO(), ok, &c)
+				if err != nil {
+					t.Logf("error getting cr for update %+v\n", err)
+					t.Fail()
+				}
+				cr.SetResourceVersion(c.GetResourceVersion())
+				err = framework.Global.DynamicClient.Update(context.TODO(), cr)
+				if err != nil {
+					t.Logf("error updating cr %+v\n", err)
+					t.Fail()
+				}
+			}
+		}
+		df, err := os.Open(dir + "/delete.yaml")
+		if err == nil {
+			d, err := readCrs(df, namespace)
+			if err != nil {
+				panic(err)
+			}
+			for _, cr := range d {
+				err = framework.Global.DynamicClient.Delete(context.TODO(), cr)
+				if err != nil {
+					t.Logf("error deleting crs %+v\n", err)
+					t.Fail()
+				}
+			}
+		}
+
+		r, err := os.Open(dir + "/assert.yaml")
 		if err != nil {
-			t.Logf("error creating crs %+v\n", err)
+			fmt.Printf("error reading assert.yaml %s\n", err.Error())
+			t.Logf("error reading assert.yaml %s\n", err.Error())
+		}
+
+		asserts, err := readAsserts(r)
+		if err != nil {
+			fmt.Printf("error loading asserts %s\n", err.Error())
+			t.Logf("error loading asserts %s\n", err.Error())
+		}
+
+		resources := make([]*unstructured.Unstructured, 0)
+		results := make([]map[string]interface{}, 0)
+
+		fmt.Printf("Printing asserts\n")
+
+		for _, assert := range asserts {
+			//fmt.Printf("%d, %+v\n", i, assert)
+			u := unstructured.Unstructured{}
+			gv, err := schema.ParseGroupVersion(assert.Resource["apiVersion"])
+			if err != nil {
+				panic("error converting gvk")
+			}
+			gvk := gv.WithKind(assert.Resource["kind"])
+			u.SetGroupVersionKind(gvk)
+			resources = append(resources, &u)
+			results = append(results, assert.Result)
+		}
+		fmt.Printf("Waiting for asserts\n")
+
+		err = WaitForResources(t, resources, results, namespace, retryInterval, timeout)
+		if err != nil {
+			t.Logf("error matching asserts %s\n", err)
 			t.Fail()
 		}
 	}
-
-	r, err := os.Open(assertsFilePath)
-	if err != nil {
-		fmt.Printf("error reading asserts.yaml %s\n", err.Error())
-		t.Logf("error reading asserts.yaml %s\n", err.Error())
-	}
-
-	asserts, err := readAsserts(r)
-	if err != nil {
-		fmt.Printf("error loading asserts %s\n", err.Error())
-		t.Logf("error loading asserts %s\n", err.Error())
-	}
-
-	resources := make([]*unstructured.Unstructured, 0)
-	results := make([]map[string]interface{}, 0)
-
-	fmt.Printf("Printing asserts\n")
-
-	for _, assert := range asserts {
-		//fmt.Printf("%d, %+v\n", i, assert)
-		u := unstructured.Unstructured{}
-		gv, err := schema.ParseGroupVersion(assert.Resource["apiVersion"])
-		if err != nil {
-			panic("error converting gvk")
-		}
-		gvk := gv.WithKind(assert.Resource["kind"])
-		u.SetGroupVersionKind(gvk)
-		resources = append(resources, &u)
-		results = append(results, assert.Result)
-	}
-	fmt.Printf("Waiting for asserts\n")
-
-	err = WaitForResources(t, resources, results, namespace, retryInterval, timeout)
-	if err != nil {
-		t.Logf("error matching asserts %s\n", err)
-		t.Fail()
-	}
-	//err = WaitForDeployment(t, f.KubeClient, namespace, "test-example-busybox", 1, retryInterval, timeout)
-
 }
 
 func WaitForResources(t *testing.T, resources []*unstructured.Unstructured, results []map[string]interface{}, namespace string, retryInterval, timeout time.Duration) error {

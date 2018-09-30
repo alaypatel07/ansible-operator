@@ -1,0 +1,16 @@
+---
+- resource:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+  result:
+    number: 1
+    status:
+      availableReplicas: 1
+
+- resource:
+    apiVersion: v1
+    kind: Pod
+  result:
+    number: 2
+    status:
+      phase: Running
